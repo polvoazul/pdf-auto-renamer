@@ -7,7 +7,7 @@ import dotenv
 import requests
 dotenv.load_dotenv()
 
-import better_exceptions; better_exceptions.hook()
+# import better_exceptions; better_exceptions.hook()
 from ratelimiter import RateLimiter
 import google.generativeai as genai
 import os
@@ -20,15 +20,22 @@ model = genai.GenerativeModel('gemini-1.5-flash-latest')
 # model = genai.GenerativeModel('gemini-1.0-pro-latest')
 
 @RateLimiter(max_calls=14, period=60)
-def gen_content(c): return model.generate_content(c)
+def gen_content(c):
+    return model.generate_content(c)
 
 @click.command()
-@click.argument('file')
+@click.argument('files', required=True, nargs=-1)
 @click.option('--folder-for-context', default=None, help='Folder for additional context')
 @click.option('--extra-instructions', default='', help='Extra instructions')
-def main(file, folder_for_context, extra_instructions):
-    if not os.path.exists(file):
-        raise FileNotFoundError(f"File {file} does not exist.")
+def main(files, folder_for_context, extra_instructions):
+    for file in files:
+        if not os.path.exists(file):
+            raise FileNotFoundError(f"File {file} does not exist.")
+    for file in files:
+        auto_rename(file, folder_for_context, extra_instructions)
+    print("Done.")
+
+def auto_rename(file, folder_for_context, extra_instructions):
     reader = PdfReader(file)
     base_dir, filename = os.path.split(os.path.abspath(file))
     pdf_text = '\n\n'.join(p.extract_text() for p in reader.pages)
@@ -45,12 +52,13 @@ def main(file, folder_for_context, extra_instructions):
         f'Here is the file contents, use it as context to create the file name: \n```\n{pdf_text}\n```'  + 
         'In the end of your response, emit a json {"new_name": ...}'
     )
-    chat = model.start_chat()
-    response = chat.send_message(query)
+    response = gen_content(query)
     try:
-        match = re.search(r'```json.*?(\{.*\}).*?```', response.text, flags=re.MULTILINE | re.DOTALL)
-        new_name = json.loads(match.group(1).strip())['new_name']
-        print(f'Renaming to {new_name!r}')
+        match = re.search(r'\{\s*"new_name":.*?\}', response.text, flags=re.MULTILINE | re.DOTALL)
+        new_name = json.loads(match.group(0).strip())['new_name']
+        if not re.match(r'[^<>:"/\\|?*]+', new_name):
+            raise ValueError(f"Invalid filename: {new_name}")
+        print(f'Renaming from {filename!r} to {new_name!r}')
         os.rename(file, os.path.join(base_dir, new_name))
     except Exception as e:
         print(e)
